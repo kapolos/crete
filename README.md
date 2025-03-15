@@ -44,12 +44,12 @@ enabling type-safe access and update of individual fields.
  - An implementation of several associated methods on the struct:
      - `new()`: constructs a new instance using the struct's `Default` implementation. Called by `LazyLock`.
      - `read()`: returns an `Arc`-wrapped shared reference to the current state.
-     - `clone()`: (if the struct implements `Clone`) returns a cloned instance of the stored value.
+     - `clone()`: (if the struct implements `Clone`) returns a cloned instance of the stored value. Available only for `T` that derives `Clone`.
      - `write(self)`: atomically replaces the current stored value with the provided one.
      - `select_ref<F: Field>(&self, field: F) -> &F::FieldType`: returns a reference to the selected field.
      - `get<F, R>(field: F, f: impl FnOnce(&F::FieldType) -> R) -> R`: applies a closure to a shared reference
        of the selected field.
-     - `select<F: Field>(field: F) -> F::FieldType`: returns a cloned value of the selected field.
+     - `select<F: Field>(field: F) -> F::FieldType`: returns a cloned value of the selected field. Available only for `T` that derives `Clone`.
      - `set<F>(field: F, value: F::FieldType)`: updates a specific field and writes the new state to the store.
      - `update(f: impl FnOnce(&mut Self))`: applies a mutation closure to the current state and updates the store.
      - `update_async(f: impl AsyncFnOnce(&mut Self))`: an asynchronous version of `update` for non-blocking mutations.
@@ -62,19 +62,25 @@ enabling type-safe access and update of individual fields.
 
 ### Static Store
 
-A static store is created for the struct, allowing atomic access to its state:
+A static store is created for the user's struct, allowing atomic access to its state:
 
+When `T` is `Clone`:
 ```rust
-static #crete_store_ident: ::std::sync::LazyLock<::std::sync::RwLock<::std::sync::Arc<#struct_name>>> =
-    ::std::sync::LazyLock::new(|| ::std::sync::RwLock::new(::std::sync::Arc::new(#struct_name::new())));
+LazyLock<RwLock<Arc<T>>>
+```
+
+Otherwise:
+```rust
+LazyLock<Arc<RwLock<T>>>
 ```
 
 ### With a struct like this:
 
 ```rust
-use crete::Crete; 
- 
-#[derive(Crete, Default, Clone, Debug)] 
+use crete::crete;
+
+#[crete()]
+#[derive(Default, Clone, Debug)] 
 pub struct Store { 
  pub field1: String, 
  pub field_foo: String, 
@@ -182,7 +188,7 @@ It works the same way, except:
 #[cfg(test)]
 mod tests_no_clone {
     use tokio;
-    use crete::Crete;
+    use crete::crete;
 
     #[derive(Debug, PartialEq)]
     pub struct NotCloneType {
@@ -194,8 +200,9 @@ mod tests_no_clone {
             NotCloneType { value: 0 }
         }
     }
-
-    #[derive(Crete, Default)]
+    
+    #[crete()]
+    #[derive(Default)]
     pub struct Store {
         pub foo: NotCloneType,
     }
@@ -230,9 +237,54 @@ mod tests_no_clone {
 }
 ```
 
+
+### Clone inference
+
+The proc macro tries to infer if the struct derives Clone. This works if you place it before the `derive` macro.
+
+```rust
+// Works
+#[crete()]
+#[derive(Clone)]
+```
+
+You can also be explicit about it (also useful if you `impl Clone` instead of deriving it):
+```rust
+// Works
+#[crete(Clone)]
+#[derive(Clone)]
+```
+
+This won't work:
+```rust
+// Fails
+#[derive(Clone)]
+#[crete()]
+```
+
+But this will work:
+```rust
+// Works
+#[derive(Clone)]
+#[crete(Clone)]
+```
+
 ### Considerations
 
-You are using `RWLock` behind the scenes. The usual considerations for locking in multithreaded code apply.
+#### Under the hood
+
+There is a different implementation depending on your struct.
+
+##### Clone store
+
+In this case, we use `RwLock<Arc<T>>`. This means readers are not blocked by writers.
+
+##### Non-clone store
+
+In this case, we use `Arc<RwLock<T>`. This means both readers and writers block.
+
+##### RwLock
+You are using `RwLock` behind the scenes. The usual considerations for locking in multithreaded code apply.
 
 In essence:
 * Don't let your thread panic while it holds a write [lock](https://doc.rust-lang.org/src/std/sync/poison/rwlock.rs.html#370-375).
